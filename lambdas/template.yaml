@@ -1,0 +1,101 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Polymarket match-fixing monitor: Discovery (Gamma → DynamoDB) + Monitor (smart-money signal, same pipeline as backtest).
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Architectures:
+      - x86_64
+
+Resources:
+  MatchesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: slug
+          AttributeType: S
+      KeySchema:
+        - AttributeName: slug
+          KeyType: HASH
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  MfdSharedLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: !Sub "${AWS::StackName}-mfd-shared"
+      ContentUri: layer/
+      CompatibleRuntimes:
+        - python3.12
+    Metadata:
+      BuildMethod: python3.12
+      BuildArchitecture: x86_64
+
+  DiscoveryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-discovery"
+      Description: Upsert upcoming Gamma events (series_ids) into DynamoDB
+      CodeUri: discovery/
+      Handler: handler.lambda_handler
+      Timeout: 300
+      MemorySize: 512
+      Layers:
+        - !Ref MfdSharedLayer
+      Environment:
+        Variables:
+          MATCHES_TABLE: !Ref MatchesTable
+          LOOKAHEAD_DAYS: "14"
+          SERIES_IDS: "10971,10439,10443"
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref MatchesTable
+      Events:
+        DiscoverySchedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(12 hours)
+            Enabled: true
+
+  MonitorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-monitor"
+      Description: Run analyze_match for matches currently in the kickoff window (or manual slugs)
+      CodeUri: monitor/
+      Handler: handler.lambda_handler
+      Timeout: 900
+      MemorySize: 2048
+      Layers:
+        - !Ref MfdSharedLayer
+      Environment:
+        Variables:
+          MATCHES_TABLE: !Ref MatchesTable
+          LARGE_TRADE_CUT: histogram
+          MONITOR_MODE: incremental
+          HISTOGRAM_BINS: "64"
+          MAX_SLUGS_PER_INVOCATION: "8"
+          ALERT_SNS_TOPIC_ARN: ""
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref MatchesTable
+      Events:
+        MonitorSchedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(5 minutes)
+            Enabled: true
+
+Outputs:
+  MatchesTableName:
+    Description: DynamoDB table for discovered event slugs (PK slug)
+    Value: !Ref MatchesTable
+  DiscoveryFunctionArn:
+    Value: !GetAtt DiscoveryFunction.Arn
+  MonitorFunctionArn:
+    Value: !GetAtt MonitorFunction.Arn
+  MfdLayerArn:
+    Value: !Ref MfdSharedLayer

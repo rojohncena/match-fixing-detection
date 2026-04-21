@@ -1,0 +1,8 @@
+.env
+.venv/
+__pycache__/
+lambdas/.aws-sam/
+lambdas/samconfig.toml
+# pip install -r lambdas/layer/requirements.txt -t lambdas/layer/python (or sam build)
+lambdas/layer/python/certifi/
+lambdas/layer/python/certifi-*.dist-info/
